@@ -60,7 +60,10 @@ flowchart TB
 
 ## Repository layout
 
+This repository is standalone; all framework components live directly under the repository root.
+
 ```text
+powerapps-playwright-dotnet-reqnroll-framework/
 ├── PowerApps.Automation.sln
 ├── .env.example
 ├── src/
