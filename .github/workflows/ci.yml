@@ -1,0 +1,139 @@
+name: Power Apps .NET Reqnroll CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Suite to run'
+        required: true
+        default: 'framework'
+        type: choice
+        options:
+          - framework
+          - canvas
+          - mda
+          - dataverse
+          - ui
+          - all
+
+permissions:
+  contents: read
+
+jobs:
+  validate-framework:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore PowerApps.Automation.sln
+
+      - name: Build
+        run: dotnet build PowerApps.Automation.sln -c Release --no-restore
+
+      - name: Validate Reqnroll framework
+        run: >-
+          dotnet test tests/PowerApps.Automation.Tests/PowerApps.Automation.Tests.csproj
+          -c Release --no-build
+          --filter "TestCategory=framework"
+          --logger "trx;LogFileName=framework.trx"
+
+      - name: Dry-run all BDD bindings
+        run: >-
+          dotnet test tests/PowerApps.Automation.Tests/PowerApps.Automation.Tests.csproj
+          -c Release --no-build
+          -e "REQNROLL_DRY_RUN=true"
+          --logger "trx;LogFileName=bdd-dry-run.trx"
+
+      - name: Upload validation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: powerapps-framework-validation
+          path: tests/PowerApps.Automation.Tests/TestResults/*.trx
+          if-no-files-found: warn
+
+  live-suite:
+    if: github.event_name == 'workflow_dispatch' && inputs.scope != 'framework'
+    needs: validate-framework
+    runs-on: ubuntu-latest
+    env:
+      HEADLESS: 'true'
+      BROWSER: chromium
+      TRACE_ENABLED: 'true'
+      VIDEO_ENABLED: 'false'
+      CANVAS_APP_URL: ${{ secrets.CANVAS_APP_URL }}
+      MODEL_DRIVEN_APP_URL: ${{ secrets.MODEL_DRIVEN_APP_URL }}
+      DATAVERSE_BASE_URL: ${{ secrets.DATAVERSE_BASE_URL }}
+      DATAVERSE_ACCESS_TOKEN: ${{ secrets.DATAVERSE_ACCESS_TOKEN }}
+      AUTH_STORAGE_STATE_PATH: .playwright-auth/state.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore and build
+        run: |
+          dotnet restore PowerApps.Automation.sln
+          dotnet build PowerApps.Automation.sln -c Release --no-restore
+
+      - name: Install Chromium
+        shell: pwsh
+        run: ./tests/PowerApps.Automation.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
+      - name: Restore UI authentication state
+        if: inputs.scope == 'canvas' || inputs.scope == 'mda' || inputs.scope == 'ui' || inputs.scope == 'all'
+        shell: bash
+        env:
+          STORAGE_STATE_BASE64: ${{ secrets.POWERAPPS_STORAGE_STATE_BASE64 }}
+        run: |
+          test -n "$STORAGE_STATE_BASE64" || (echo "POWERAPPS_STORAGE_STATE_BASE64 secret is required" && exit 1)
+          mkdir -p .playwright-auth
+          printf '%s' "$STORAGE_STATE_BASE64" | base64 --decode > .playwright-auth/state.json
+
+      - name: Select test filter
+        id: filter
+        shell: bash
+        run: |
+          case "${{ inputs.scope }}" in
+            canvas) echo 'value=TestCategory=canvas' >> "$GITHUB_OUTPUT" ;;
+            mda) echo 'value=TestCategory=mda' >> "$GITHUB_OUTPUT" ;;
+            dataverse) echo 'value=TestCategory=dataverse' >> "$GITHUB_OUTPUT" ;;
+            ui) echo 'value=TestCategory=ui' >> "$GITHUB_OUTPUT" ;;
+            all) echo 'value=' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'Unsupported scope' && exit 2 ;;
+          esac
+
+      - name: Run live suite
+        shell: bash
+        run: |
+          FILTER='${{ steps.filter.outputs.value }}'
+          if [ -n "$FILTER" ]; then
+            dotnet test tests/PowerApps.Automation.Tests/PowerApps.Automation.Tests.csproj -c Release --no-build --filter "$FILTER" --logger "trx;LogFileName=live.trx"
+          else
+            dotnet test tests/PowerApps.Automation.Tests/PowerApps.Automation.Tests.csproj -c Release --no-build --logger "trx;LogFileName=live.trx"
+          fi
+
+      - name: Upload live evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: powerapps-live-evidence-${{ inputs.scope }}
+          path: |
+            artifacts/**
+            tests/PowerApps.Automation.Tests/TestResults/*.trx
+          if-no-files-found: warn
+          retention-days: 7

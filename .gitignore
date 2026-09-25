@@ -1,0 +1,14 @@
+bin/
+obj/
+TestResults/
+artifacts/
+.env
+.env.*
+!.env.example
+.playwright-auth/
+*.trx
+*.user
+*.suo
+.vs/
+.idea/
+.DS_Store
